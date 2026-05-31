@@ -1,0 +1,138 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import requests
+from io import StringIO
+
+# 1. Функція для завантаження даних з архівів
+def load_dataset(url):
+    try:
+        response = requests.get(url, timeout=10)
+        # Перевіряємо, чи ми не отримали HTML замість тексту
+        if "<!DOCTYPE" in response.text or "<html" in response.text.lower():
+            print(f"Помилка: Посилання {url} веде на веб-сторінку, а не на файл з даними.")
+            return None
+            
+        lines = response.text.strip().splitlines()
+        data = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    # Спроба конвертувати перші дві колонки
+                    data.append([float(parts[0]), float(parts[1])])
+                except ValueError:
+                    continue # Пропускаємо рядки з текстом (заголовки)
+        
+        if not data:
+            return None
+        return np.array(data)
+    except Exception as e:
+        print(f"Помилка мережі: {e}")
+        return None
+    
+# 2. Реалізація алгоритму CentNN
+class CentNN:
+    def __init__(self, m_clusters):
+        self.m = m_clusters
+        self.weights = []
+
+    def fit(self, data):
+        n_samples = data.shape[0]
+        # Ініціалізація: центроїд усіх даних [cite: 15]
+        centroid = np.mean(data, axis=0)
+        # Початкові ваги w1 та w2 навколо центроїда [cite: 16, 17]
+        epsilon = 0.01
+        w1 = centroid + epsilon
+        w2 = centroid - epsilon
+        self.weights = [w1, w2]
+        
+        # Кількість елементів у кожному кластері
+        counts = [n_samples / 2, n_samples / 2] 
+        
+        k = 2
+        while k <= self.m:
+            epoch = 0
+            while True:
+                loser_count = 0
+                # Зберігаємо попередніх переможців для визначення "тих, хто програв" [cite: 26]
+                winners_prev = self._get_winners(data)
+                
+                for idx, x in enumerate(data):
+                    # Пошук переможця (найближчого нейрона) [cite: 25]
+                    distances = [np.linalg.norm(x - w) for w in self.weights]
+                    j = np.argmin(distances)
+                    
+                    # Якщо це не перша епоха, визначаємо нейрон-невдаха [cite: 26, 27]
+                    i = winners_prev[idx]
+                    
+                    if i != j:
+                        # Оновлення переможця 
+                        counts[j] += 1
+                        self.weights[j] += (1 / counts[j]) * (x - self.weights[j])
+                        
+                        # Оновлення невдахи 
+                        if counts[i] > 1:
+                            counts[i] -= 1
+                            self.weights[i] -= (1 / counts[i]) * (x - self.weights[i])
+                        
+                        loser_count += 1
+                
+                epoch += 1
+                if loser_count == 0 or epoch > 50: # Умова зупинки [cite: 35]
+                    break
+            
+            if k < self.m:
+                # Розщеплення кластера з найбільшою помилкою [cite: 39]
+                errors = self._calculate_errors(data)
+                split_idx = np.argmax(errors)
+                new_w = self.weights[split_idx] + epsilon
+                self.weights.append(new_w)
+                counts.append(0)
+                k += 1
+            else:
+                break
+                
+        return np.array(self.weights)
+
+    def _get_winners(self, data):
+        winners = []
+        for x in data:
+            distances = [np.linalg.norm(x - w) for w in self.weights]
+            winners.append(np.argmin(distances))
+        return winners
+
+    def _calculate_errors(self, data):
+        winners = self._get_winners(data)
+        errors = np.zeros(len(self.weights))
+        for idx, x in enumerate(data):
+            w_idx = winners[idx]
+            errors[w_idx] += np.linalg.norm(x - self.weights[w_idx])**2
+        return errors
+
+# 3. Виконання для ваших посилань
+urls = [
+    "https://web.archive.org/web/20230316224609/https://cs.joensuu.fi/sipu/datasets/unbalance1.txt",
+    "https://web.archive.org/web/20230316224609/https://cs.joensuu.fi/sipu/datasets/s2.txt",
+    "https://web.archive.org/web/20230316224609/https://cs.joensuu.fi/sipu/datasets/a2.txt"
+]
+
+# Кількість кластерів (згідно з описом наборів даних)
+n_clusters_list = [8, 15, 20] 
+
+for i, url in enumerate(urls):
+    print(f"Обробка набору даних {i+1}...")
+    try:
+        data = load_dataset(url)
+        model = CentNN(m_clusters=n_clusters_list[i])
+        centroids = model.fit(data)
+        
+        # Візуалізація
+        plt.figure(figsize=(8, 6))
+        plt.scatter(data[:, 0], data[:, 1], s=1, c='gray', alpha=0.5, label='Дані')
+        plt.scatter(centroids[:, 0], centroids[:, 1], c='red', marker='x', s=100, label='Центроїди')
+        plt.title(f"Кластеризація CentNN: Набір {i+1}")
+        plt.legend()
+        plt.show()
+    except Exception as e:
+        print(f"Помилка завантаження {url}: {e}")

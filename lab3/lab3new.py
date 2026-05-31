@@ -1,0 +1,116 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, RepeatVector, TimeDistributed
+
+# 1. Завантаження даних
+url = "https://raw.githubusercontent.com/jbrownlee/Datasets/master/daily-min-temperatures.csv"
+data = pd.read_csv(url)
+
+temps = data['Temp'].values.reshape(-1,1)
+
+# 2. Нормалізація даних
+scaler = MinMaxScaler(feature_range=(0,1))
+temps_scaled = scaler.fit_transform(temps)
+
+# 3. Розділення даних
+n = len(temps_scaled)
+
+train_size = int(n * 0.8)
+val_size = int(n * 0.1)
+
+train = temps_scaled[:train_size]
+val = temps_scaled[train_size:train_size+val_size]
+test = temps_scaled[train_size+val_size:]
+# 4. Формування послідовностей
+def create_dataset(dataset, window=10):
+    X, y = [], []
+    for i in range(len(dataset)-window):
+        X.append(dataset[i:i+window])
+        y.append(dataset[i+window])
+    return np.array(X), np.array(y)
+
+window = 10
+
+X_train, y_train = create_dataset(train, window)
+X_val, y_val = create_dataset(val, window)
+X_test, y_test = create_dataset(test, window)
+
+# 5. LSTM модель (1 крок вперед)
+model = Sequential()
+
+model.add(LSTM(50, activation='tanh', input_shape=(window,1)))
+model.add(Dense(1))
+
+model.compile(optimizer='adam', loss='mse')
+
+model.fit(
+    X_train, y_train,
+    epochs=20,
+    batch_size=32,
+    validation_data=(X_val,y_val),
+    verbose=1
+)
+
+# 6. Прогноз
+pred = model.predict(X_test)
+
+# повертаємо масштаб
+pred = scaler.inverse_transform(pred)
+y_test_real = scaler.inverse_transform(y_test)
+
+# 7. Метрики точності
+RMSE = np.sqrt(mean_squared_error(y_test_real, pred))
+MAE = mean_absolute_error(y_test_real, pred)
+
+MAPE = np.mean(np.abs((y_test_real - pred) / y_test_real)) * 100
+
+print("RMSE =", RMSE)
+print("MAE =", MAE)
+print("MAPE =", MAPE)
+
+# 8. Графік прогнозу
+plt.figure(figsize=(10,5))
+
+plt.plot(y_test_real, label="Реальні значення")
+plt.plot(pred, label="Прогноз")
+
+plt.legend()
+plt.title("Прогноз температури (1 крок вперед)")
+plt.show()
+
+# 9. Прогноз на декілька кроків
+future_steps = 7
+
+last_sequence = temps_scaled[-window:]
+future_predictions = []
+
+current_seq = last_sequence.copy()
+
+for i in range(future_steps):
+
+    pred = model.predict(current_seq.reshape(1,window,1))
+    future_predictions.append(pred[0,0])
+
+    current_seq = np.append(current_seq[1:], pred)
+
+future_predictions = scaler.inverse_transform(
+    np.array(future_predictions).reshape(-1,1)
+)
+
+print("Прогноз на 7 днів вперед:")
+print(future_predictions)
+
+plt.figure(figsize=(10,5))
+
+plt.plot(range(len(temps)), temps, label="Історичні дані")
+plt.plot(range(len(temps), len(temps)+future_steps), future_predictions,
+         label="Майбутній прогноз")
+
+plt.legend()
+plt.show()
